@@ -1,0 +1,285 @@
+---
+title: "Collect Cyberball Behavioral Data for TDS1"
+author: "NV"
+date: "May 3, 2017"
+output: word_document
+---
+
+  # Nandita Vijayakumar
+  # 5/3/2017
+  # This script relabels individual subjects Cyberball log files into appropriate formate (i.e. "cyb_301_1.csv")
+  # Note in combines the "rename_files_cyberball.R", which was run as a separete script for TDS2.
+  # Output of this script is used with "id.events_cyb1.Rmd" and "id.events_cyb2.Rmd" for identify relevant events (and onsets/durations) for each individual.
+  
+
+```{r}
+osuRepo<-'http://ftp.osuosl.org/pub/cran/'
+
+#Check if the packages we need are installed, and if not, install them
+if(!require(plyr)){
+  install.packages('plyr',repos=osuRepo)
+}
+library(plyr)
+
+if(!require(dplyr)){
+	install.packages('dplyr',repos=osuRepo)
+}
+library(dplyr)
+if(!require(tidyr)){
+	install.packages('tidyr',repos=osuRepo)
+}
+library(tidyr)
+if(!require(data.table)){
+	install.packages('data.table',repos=osuRepo)
+}
+library(data.table)
+if(!require(R.matlab)){
+	install.packages('R.matlab',repos=osuRepo)
+}
+library(R.matlab)
+```
+
+```{r}
+#LOAD CYB MERGED FILE AND FORMAT
+rm(list=ls())
+
+#define folder locations
+psi_folder<-'/Volumes/TDS/'
+cyb_folder<-'behavior/CyberBall/raw/'
+scripts_folder<-'/projects/dsnlab/tds/TDS_scripts/fMRI/fx/multiconds/cyberball'
+unmerged_folder<-'TDS_cyberball_data/'
+  
+#read in cyberball files
+files_folder<-paste(psi_folder,cyb_folder,sep='')
+cb_data_long<-read.csv(paste(files_folder,"Merged_Log_1513721440.csv",sep=''))
+
+#one row per run
+cb_data<-subset(cb_data_long, v1 == 'connecting(time: 6)')
+
+#separate day, date, and time
+cb_data$stamp<-cb_data$timestamp
+cb_data<-separate(cb_data, "timestamp", c("junk", "timestamp"), sep=4)
+cb_data$date <- format(as.POSIXct(strptime(cb_data$timestamp, '%B %d %Y %H:%M:%S',tz="")),format = "%m/%d/%Y")
+cb_data$time <- format(as.POSIXct(strptime(cb_data$timestamp, '%B %d %Y %H:%M:%S',tz="")),format = "%H:%M:%S")
+cb_data$timestamp <- strptime(cb_data$timestamp, '%B %d %Y %H:%M:%S',tz="")
+
+#order by date and time
+cb_data <- cb_data[order(cb_data[,"timestamp"],decreasing=F),] 
+
+#remove unnecessary columns
+cb_data$junk <-NULL
+cb_data$timestamp <-NULL
+
+#limit to TDS1 and TDS3
+cb_data$date <- as.Date(cb_data$date, format= "%m/%d/%Y")
+#cb_data <- subset(cb_data, date > "2015-08-17")
+x <- c("Chuck", "al+capone", "Alfred", "PART_0013", "P0023", "P0033", "9008", "999")
+y <- c("Sat Nov 07 2015 09:12:52 GMT-0800 (PST)", "Wed Dec 02 2015 16:08:07 GMT-0800 (PST)", "Wed Dec 02 2015 13:40:06 GMT-0800 (PST)","Mon Dec 22 2014 12:33:09 GMT-0800 (PST)","Sat Mar 07 2015 09:56:49 GMT-0800 (PST)")
+
+cb_data <- cb_data %>% filter(!(grepl(paste(x, collapse = "|"), userid))) %>% filter(!stamp == "Sat Nov 07 2015 09:12:52 GMT-0800 (PST)") %>% filter(!stamp == "Mon Dec 22 2014 12:33:09 GMT-0800 (PST)") %>% filter(!stamp == "Sat Mar 07 2015 09:56:49 GMT-0800 (PST)") %>% filter(!date == "2015-12-02")
+
+#generate "number" which orders runs by time within each date
+cb_data<-
+  cb_data %>%
+  group_by(date) %>%
+  mutate(number = 1:n())
+
+#generate "order" which collapses run 1 and 2 into "1" for first participant and runs 3/4 into "2" for second participant
+cb_data$order<-ifelse(cb_data$number==1|cb_data$number==2, 1, 2)
+
+#generate "run" which labels the runs appropriately
+cb_data$run<-mapvalues(cb_data$number, from=c("1","2","3","4"), to=c("1","2","1","2"))
+
+#generate variable "datecode"
+cb_data$datecode<-with(cb_data, paste(date,order))
+```
+
+
+```{r}
+#LOAD SESSION DATES AND CREATE LABELLED_DF
+
+#read in session dates
+setwd(scripts_folder)
+sess_data<-read.csv("TDS_Session2_Dates.csv")
+
+#clean variables
+sess_data$Date <- as.Date(sess_data$Date, format= "%m/%d/%y")
+sess_data$order <- sess_data$Session_No
+
+#generate variable "datecode"
+sess_data$datecode<-with(sess_data, paste(Date,order))
+
+#match cd_data w/ sl_data by datecode
+labelled_df <- merge(cb_data, sess_data, by="datecode")
+```
+
+```{r}
+#LIST UNMERGED FILES AND RENAME
+files_folder3<-paste(psi_folder,cyb_folder,unmerged_folder,sep='')
+setwd(files_folder3)
+
+#list the files 
+listFiles<-list.files(files_folder3,recursive=T, pattern='.*csv$')
+
+for(i in 1:length(listFiles)) {
+  df<-read.csv(listFiles[i]) #read in the file
+  timestamp<-as.character(df[1,2]) #change the timestamp into a character
+  label<-filter(labelled_df,stamp==timestamp) #match the stamp in the byDate df with the timestamp in the file
+  SID<-label$SID
+  run<-label$run
+  
+  if (df$userid[1] == "agileProgger") {
+    
+      if (!(length(SID) == 0)) {
+      
+      #renames SID and run within the file
+      df$userid<-as.character(df$userid) 
+      df$userid[df$userid=="agileProgger"]<-SID
+      df$run<-run
+      
+      #delete irrelevant columns
+      df<-df[,-c(5,6)]
+      
+      #writes the .csv file to a new folder
+      setwd(paste(psi_folder,"behavior/CyberBall/multiconds/Labelled_Data",sep=""))
+      write.csv(df, paste("cyb",SID,"_",run,".csv", sep=""))
+      setwd(files_folder3)
+      
+      } else {}
+    
+  } else {
+      
+     if (!(length(SID) == 0)) {
+      
+      #renames run within the file
+      df$run<-run
+      
+      #delete irrelevant columns
+      df<-df[,-c(5,6)]
+      
+      #writes the .csv file to a new folder
+      setwd(paste(psi_folder,"behavior/CyberBall/multiconds/Labelled_Data",sep=""))
+      write.csv(df, paste("cyb",SID,"_",run,".csv", sep=""))
+      setwd(files_folder3)
+      
+      } else {}
+    
+  }}
+  
+end
+```
+
+
+```{r}
+#Removing excluded subjects 
+
+# 16 were excluded from the MRI scanning portion of the study: 
+#     9 were not scanned due to metal in the body
+#     4 had braces or a permanent retainer (118, 147, 154, 166)
+#     5 completed the paradigm outside of the MRI scanner due to metal in the body (103-braces, 107-metal rod in mouth, 138- permanent retainer, 176-permanent retainer and 191-metal in ear)
+#     1 did behavioral due to parents not being comfortable with the scanner (112)  
+#     1 was excluded due to a diagnosis of Autism Spectrum Disorder (143) 
+#     5 dropped out of the study and were not scanned for unknown reasons (148, 149-says ineligible, not sure why, 153, 180)
+# 
+# A total of 9 were excluded from the Cyberball analyses
+#     8 were excluded because they received a different schedule of throws 
+#     1 was excluded due to technical errors recording data during the first round of cyberball
+
+
+setwd(paste(psi_folder,"behavior/CyberBall/multiconds/Labelled_Data",sep=""))
+
+fn <- "cyb103_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb103_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb107_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb107_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb110_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb110_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb112_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb112_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb118_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb118_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb138_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb138_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb143_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb143_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb147_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb147_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb148_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb148_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb149_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb149_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb153_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb153_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb154_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb154_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb166_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb166_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb176_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb176_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb178_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb178_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb180_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb180_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb189_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb189_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb191_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb191_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
+fn <- "cyb161_1.csv"
+if (file.exists(fn)) file.remove(fn)
+fn <- "cyb161_2.csv"
+if (file.exists(fn)) file.remove(fn)
+
